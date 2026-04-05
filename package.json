@@ -7,7 +7,8 @@
     "start": "node index.js",
     "dev": "nodemon index.js",
     "deploy": "pm2 start ecosystem.config.js",
-    "test:session": "node test-session.js"
+    "test:session": "node test-session.js",
+    "clear:session": "node clear-session.js"
   },
   "keywords": [],
   "author": "",
