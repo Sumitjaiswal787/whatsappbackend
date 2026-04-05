@@ -1,5 +1,7 @@
+require('dotenv').config();
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode');
+const qrcodeTerminal = require('qrcode-terminal');
 const express = require('express');
 const bodyParser = require('body-parser');
 const axios = require('axios');
@@ -8,9 +10,9 @@ const fs = require('fs');
 const puppeteer = require('puppeteer');
 
 const app = express();
-const port = 3001;
-const SHARED_SECRET = "a_secure_shared_secret_here";
-const PHP_CALLBACK_URL = "http://localhost:8000/api/callback.php";
+const port = process.env.PORT || 3001;
+const SHARED_SECRET = process.env.SHARED_SECRET || "a_secure_shared_secret_here";
+const PHP_CALLBACK_URL = process.env.PHP_CALLBACK_URL || "http://localhost:8000/api/callback.php";
 
 app.use(bodyParser.json());
 
@@ -174,7 +176,8 @@ function initWhatsAppClient(sessionId, userId, phoneNumber = null) {
 
     client.on('qr', async (qr) => {
         if (phoneNumber) return; // Ignore QR if pairing by phone
-        console.log(`[${sessionId}] QR received`);
+        console.log(`[${sessionId}] QR received:`);
+        qrcodeTerminal.generate(qr, { small: true });
         const qrBase64 = await qrcode.toDataURL(qr);
         updatePHPStatus(sessionId, { status: 'qr_ready', qr: qrBase64 });
     });
