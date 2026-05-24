@@ -1,13 +1,12 @@
 require('dotenv').config();
-const { Client, LocalAuth } = require('whatsapp-web.js');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, delay } = require('@whiskeysockets/baileys');
+const pino = require('pino');
 const qrcode = require('qrcode');
-const qrcodeTerminal = require('qrcode-terminal');
 const express = require('express');
 const bodyParser = require('body-parser');
 const axios = require('axios');
 const path = require('path');
 const fs = require('fs');
-const puppeteer = require('puppeteer');
 const cors = require('cors');
 
 const app = express();
@@ -18,25 +17,11 @@ const PHP_CALLBACK_URL = process.env.PHP_CALLBACK_URL || "http://localhost:8000/
 app.use(cors());
 app.use(bodyParser.json());
 
-// Map to store active WhatsApp clients and their current state
-const clients = new Map();
+// Map to store active Baileys sockets and their current state
+const sockets = new Map();
 const sessionStates = new Map();
 
-function getChromePath() {
-    if (process.env.PUPPETEER_EXECUTABLE_PATH) return process.env.PUPPETEER_EXECUTABLE_PATH;
-    const paths = [
-        'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-        'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-        'C:\\Users\\' + process.env.USERNAME + '\\AppData\\Local\\Google\\Chrome\\Application\\chrome.exe'
-    ];
-    for (const p of paths) {
-        if (fs.existsSync(p)) return p;
-    }
-    return puppeteer.executablePath();
-}
-
 async function updatePHPStatus(sessionId, updateData) {
-    // Keep internal state updated for REST API
     const currentState = sessionStates.get(sessionId) || {};
     sessionStates.set(sessionId, { ...currentState, ...updateData });
 
@@ -48,63 +33,57 @@ async function updatePHPStatus(sessionId, updateData) {
                 ...updateData
             }).catch(() => {});
         }
-    } catch (error) {
-        // ignore webhook errors
-    }
+    } catch (error) {}
 }
 
-function initWhatsAppClient(sessionId, userId = 'default', phoneNumber = null) {
-    if (clients.has(sessionId)) return clients.get(sessionId);
+async function initWhatsAppClient(sessionId) {
+    if (sockets.has(sessionId)) return sockets.get(sessionId);
 
-    console.log(`[${sessionId}] Initializing client...`);
+    console.log(`[${sessionId}] Initializing Baileys client...`);
     sessionStates.set(sessionId, { status: 'initializing' });
-    
-    const clientOptions = {
-        authStrategy: new LocalAuth({ clientId: sessionId }),
-        puppeteer: {
-            headless: true,
-            args: [
-                '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
-                '--disable-accelerated-2d-canvas', '--no-first-run', '--no-zygote',
-                '--single-process', '--disable-gpu'
-            ],
-            executablePath: getChromePath()
-        },
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-    };
 
-    const client = new Client(clientOptions);
+    const authDir = path.join(__dirname, 'auth_info', `session-${sessionId}`);
+    const { state, saveCreds } = await useMultiFileAuthState(authDir);
 
-    client.on('qr', async (qr) => {
-        console.log(`[${sessionId}] QR received`);
-        qrcodeTerminal.generate(qr, { small: true });
-        const qrBase64 = await qrcode.toDataURL(qr);
-        updatePHPStatus(sessionId, { status: 'qr_ready', qr: qrBase64, qrRaw: qr });
+    const sock = makeWASocket({
+        auth: state,
+        printQRInTerminal: false,
+        logger: pino({ level: 'silent' }) // suppress verbose logs
     });
 
-    client.on('ready', async () => {
-        console.log(`[${sessionId}] Client is ready!`);
-        updatePHPStatus(sessionId, { status: 'connected' });
+    sock.ev.on('creds.update', saveCreds);
+
+    sock.ev.on('connection.update', async (update) => {
+        const { connection, lastDisconnect, qr } = update;
+
+        if (qr) {
+            console.log(`[${sessionId}] QR received`);
+            const qrBase64 = await qrcode.toDataURL(qr);
+            updatePHPStatus(sessionId, { status: 'qr_ready', qr: qrBase64, qrRaw: qr });
+        }
+
+        if (connection === 'close') {
+            const shouldReconnect = (lastDisconnect.error)?.output?.statusCode !== DisconnectReason.loggedOut;
+            console.log(`[${sessionId}] connection closed due to `, lastDisconnect.error, ', reconnecting ', shouldReconnect);
+            
+            if (shouldReconnect) {
+                // Reconnect automatically
+                sockets.delete(sessionId);
+                setTimeout(() => initWhatsAppClient(sessionId), 2000);
+            } else {
+                // Logged out
+                updatePHPStatus(sessionId, { status: 'disconnected' });
+                sockets.delete(sessionId);
+                if (fs.existsSync(authDir)) fs.rmSync(authDir, { recursive: true, force: true });
+            }
+        } else if (connection === 'open') {
+            console.log(`[${sessionId}] Client is ready!`);
+            updatePHPStatus(sessionId, { status: 'connected' });
+        }
     });
 
-    client.on('disconnected', (reason) => {
-        console.log(`[${sessionId}] Client disconnected:`, reason);
-        updatePHPStatus(sessionId, { status: 'disconnected' });
-        clients.delete(sessionId);
-    });
-
-    client.on('auth_failure', (msg) => {
-        console.error(`[${sessionId}] Authentication failure:`, msg);
-        updatePHPStatus(sessionId, { status: 'disconnected' });
-    });
-
-    client.initialize().catch(err => {
-        console.error(`[${sessionId}] FATAL Initialization failed:`, err);
-        updatePHPStatus(sessionId, { status: 'error', error: err.message });
-    });
-
-    clients.set(sessionId, client);
-    return client;
+    sockets.set(sessionId, sock);
+    return sock;
 }
 
 // REST API for CRM Integration (Multi-Tenant via sessionId)
@@ -113,7 +92,7 @@ app.get('/status', (req, res) => {
     const sessionId = req.query.sessionId;
     if (!sessionId) return res.status(400).json({ error: 'Missing sessionId' });
     
-    if (!clients.has(sessionId)) {
+    if (!sockets.has(sessionId)) {
         initWhatsAppClient(sessionId);
         return res.json({ status: 'initializing' });
     }
@@ -155,12 +134,12 @@ app.post('/send', async (req, res) => {
     const { sessionId, number, message } = req.body;
     if (!sessionId || !number || !message) return res.status(400).json({ status: 'error', error: 'Missing params' });
     
-    const client = clients.get(sessionId);
-    if (!client) return res.status(400).json({ status: 'error', error: 'Session not connected' });
+    const sock = sockets.get(sessionId);
+    if (!sock) return res.status(400).json({ status: 'error', error: 'Session not connected' });
     
     try {
-        const chatId = number.includes('@c.us') ? number : `${number}@c.us`;
-        await client.sendMessage(chatId, message);
+        const jid = number.includes('@s.whatsapp.net') ? number : `${number}@s.whatsapp.net`;
+        await sock.sendMessage(jid, { text: message });
         res.json({ status: 'success' });
     } catch (e) {
         res.status(500).json({ status: 'error', error: e.message });
@@ -171,17 +150,16 @@ app.post('/restart', async (req, res) => {
     const sessionId = req.body.sessionId || req.query.sessionId;
     if (!sessionId) return res.status(400).json({ error: 'Missing sessionId' });
     
-    if (clients.has(sessionId)) {
-        const client = clients.get(sessionId);
+    if (sockets.has(sessionId)) {
+        const sock = sockets.get(sessionId);
         try {
-            await client.logout().catch(()=>{});
-            await client.destroy().catch(()=>{});
+            sock.logout();
         } catch (e) {}
-        clients.delete(sessionId);
+        sockets.delete(sessionId);
         sessionStates.delete(sessionId);
         
-        const sessionPath = path.join(__dirname, '.wwebjs_auth', `session-${sessionId}`);
-        if (fs.existsSync(sessionPath)) fs.rmSync(sessionPath, { recursive: true, force: true });
+        const authDir = path.join(__dirname, 'auth_info', `session-${sessionId}`);
+        if (fs.existsSync(authDir)) fs.rmSync(authDir, { recursive: true, force: true });
     }
     
     initWhatsAppClient(sessionId);
@@ -189,5 +167,5 @@ app.post('/restart', async (req, res) => {
 });
 
 app.listen(port, () => {
-    console.log(`Multi-Tenant WhatsApp Backend running at http://localhost:${port}`);
+    console.log(`Baileys Multi-Tenant WhatsApp Backend running at http://localhost:${port}`);
 });
