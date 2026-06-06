@@ -98,7 +98,11 @@ app.get('/status', (req, res) => {
     }
     
     const state = sessionStates.get(sessionId) || { status: 'unknown' };
-    res.json({ status: state.status });
+    res.json({ 
+        status: state.status,
+        qr: state.qr || null,
+        qrRaw: state.qrRaw || null
+    });
 });
 
 app.get('/qr', (req, res) => {
