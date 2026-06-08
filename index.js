@@ -135,7 +135,7 @@ app.get('/qr', (req, res) => {
 });
 
 app.post('/send', async (req, res) => {
-    const { sessionId, number, message } = req.body;
+    const { sessionId, number, message, image } = req.body;
     if (!sessionId || !number || !message) return res.status(400).json({ status: 'error', error: 'Missing params' });
     
     const sock = sockets.get(sessionId);
@@ -143,7 +143,11 @@ app.post('/send', async (req, res) => {
     
     try {
         const jid = number.includes('@s.whatsapp.net') ? number : `${number}@s.whatsapp.net`;
-        await sock.sendMessage(jid, { text: message });
+        if (image) {
+            await sock.sendMessage(jid, { image: { url: image }, caption: message });
+        } else {
+            await sock.sendMessage(jid, { text: message });
+        }
         res.json({ status: 'success' });
     } catch (e) {
         res.status(500).json({ status: 'error', error: e.message });
