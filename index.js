@@ -139,7 +139,7 @@ app.post('/send', async (req, res) => {
     if (!sessionId || !number || !message) return res.status(400).json({ status: 'error', error: 'Missing params' });
     
     const sock = sockets.get(sessionId);
-    if (!sock) return res.status(400).json({ status: 'error', error: 'Session not connected' });
+    if (!sock || !sock.user) return res.status(400).json({ status: 'error', error: 'Session not authenticated or still connecting. Please scan the QR code.' });
     
     try {
         const jid = number.includes('@s.whatsapp.net') ? number : `${number}@s.whatsapp.net`;
