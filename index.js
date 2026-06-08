@@ -147,6 +147,12 @@ app.post('/send', async (req, res) => {
             formattedNumber = '91' + formattedNumber;
         }
         const jid = formattedNumber.includes('@s.whatsapp.net') ? formattedNumber : `${formattedNumber}@s.whatsapp.net`;
+        
+        // Anti-ban: Simulate typing for 1.5 to 2.5 seconds before sending
+        await sock.sendPresenceUpdate('composing', jid);
+        await delay(1500 + Math.random() * 1000);
+        await sock.sendPresenceUpdate('paused', jid);
+
         if (image) {
             await sock.sendMessage(jid, { image: { url: image }, caption: message });
         } else {
