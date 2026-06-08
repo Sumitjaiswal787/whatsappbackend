@@ -142,7 +142,11 @@ app.post('/send', async (req, res) => {
     if (!sock || !sock.user) return res.status(400).json({ status: 'error', error: 'Session not authenticated or still connecting. Please scan the QR code.' });
     
     try {
-        const jid = number.includes('@s.whatsapp.net') ? number : `${number}@s.whatsapp.net`;
+        let formattedNumber = number.replace(/\D/g, '');
+        if (formattedNumber.length === 10) {
+            formattedNumber = '91' + formattedNumber;
+        }
+        const jid = formattedNumber.includes('@s.whatsapp.net') ? formattedNumber : `${formattedNumber}@s.whatsapp.net`;
         if (image) {
             await sock.sendMessage(jid, { image: { url: image }, caption: message });
         } else {
