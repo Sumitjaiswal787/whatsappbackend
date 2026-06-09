@@ -2,7 +2,7 @@ module.exports = {
   apps: [
     {
       name: 'whatsapp-backend',
-      script: 'index.js',
+      script: 'enhancedWorker.js',
       instances: 1,
       autorestart: true,
       watch: false,

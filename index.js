@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, delay } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, delay, Browsers } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const qrcode = require('qrcode');
 const express = require('express');
@@ -40,7 +40,7 @@ async function initWhatsAppClient(sessionId) {
     if (sockets.has(sessionId)) return sockets.get(sessionId);
 
     console.log(`[${sessionId}] Initializing Baileys client...`);
-    sessionStates.set(sessionId, { status: 'initializing' });
+    sessionStates.set(sessionId, { status: 'initializing', reconnectAttempts: 0 });
 
     const authDir = path.join(__dirname, 'auth_info', `session-${sessionId}`);
     const { state, saveCreds } = await useMultiFileAuthState(authDir);
@@ -48,7 +48,12 @@ async function initWhatsAppClient(sessionId) {
     const sock = makeWASocket({
         auth: state,
         printQRInTerminal: false,
-        logger: pino({ level: 'silent' }) // suppress verbose logs
+        browser: Browsers.macOS('Desktop'),
+        logger: pino({ level: 'silent' }), // suppress verbose logs
+        connectTimeoutMs: 60000,
+        qrTimeout: 40000,
+        keepAliveIntervalMs: 15000,
+        generateHighQualityLinkPreviews: true
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -63,21 +68,35 @@ async function initWhatsAppClient(sessionId) {
         }
 
         if (connection === 'close') {
-            const shouldReconnect = (lastDisconnect.error)?.output?.statusCode !== DisconnectReason.loggedOut;
+            const statusCode = (lastDisconnect.error)?.output?.statusCode;
+            const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
             console.log(`[${sessionId}] connection closed due to `, lastDisconnect.error, ', reconnecting ', shouldReconnect);
             
             if (shouldReconnect) {
+                // If it's a 408 timeout (QR expired without scanning) or connection stuck
+                if (statusCode === 408 || statusCode === 440) {
+                    const currentState = sessionStates.get(sessionId) || {};
+                    const attempts = (currentState.reconnectAttempts || 0) + 1;
+                    console.warn(`[${sessionId}] Connection timeout (${statusCode}). Attempt ${attempts}`);
+                    if (attempts >= 50) {
+                        console.log(`[${sessionId}] High timeouts. Continuing to retry...`);
+                    }
+                    sessionStates.set(sessionId, { ...currentState, reconnectAttempts: attempts });
+                }
+
                 // Reconnect automatically
                 sockets.delete(sessionId);
-                setTimeout(() => initWhatsAppClient(sessionId), 2000);
+                setTimeout(() => initWhatsAppClient(sessionId), 3000);
             } else {
                 // Logged out
-                updatePHPStatus(sessionId, { status: 'disconnected' });
+                updatePHPStatus(sessionId, { status: 'disconnected', qr: null, qrRaw: null });
                 sockets.delete(sessionId);
                 if (fs.existsSync(authDir)) fs.rmSync(authDir, { recursive: true, force: true });
             }
         } else if (connection === 'open') {
             console.log(`[${sessionId}] Client is ready!`);
+            const currentState = sessionStates.get(sessionId) || {};
+            sessionStates.set(sessionId, { ...currentState, reconnectAttempts: 0 });
             updatePHPStatus(sessionId, { status: 'connected' });
         }
     });
@@ -148,9 +167,10 @@ app.post('/send', async (req, res) => {
         }
         const jid = formattedNumber.includes('@s.whatsapp.net') ? formattedNumber : `${formattedNumber}@s.whatsapp.net`;
         
-        // Anti-ban: Simulate typing for 1.5 to 2.5 seconds before sending
+        // Anti-ban: Simulate typing for a duration based on message length
         await sock.sendPresenceUpdate('composing', jid);
-        await delay(1500 + Math.random() * 1000);
+        const typingTime = 2000 + Math.random() * 2000 + (message.length * 20); // 2-4 seconds base + 20ms per char
+        await delay(Math.min(typingTime, 8000)); // cap at 8 seconds max
         await sock.sendPresenceUpdate('paused', jid);
 
         if (image) {
@@ -187,3 +207,14 @@ app.post('/restart', async (req, res) => {
 app.listen(port, () => {
     console.log(`Baileys Multi-Tenant WhatsApp Backend running at http://localhost:${port}`);
 });
+
+// Process-level crash guard
+process.on('uncaughtException', (err) => {
+    console.error('❌ uncaughtException (process protected):', err.message);
+    try { console.error(err.stack); } catch (_) {}
+});
+
+process.on('unhandledRejection', (reason) => {
+    console.error('❌ unhandledRejection (process protected):', reason);
+});
+
