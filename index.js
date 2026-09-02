@@ -69,7 +69,7 @@ async function initWhatsAppClient(sessionId) {
 
         if (connection === 'close') {
             const statusCode = (lastDisconnect.error)?.output?.statusCode;
-            const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+            const shouldReconnect = statusCode !== DisconnectReason.loggedOut && statusCode !== 428;
             console.log(`[${sessionId}] connection closed due to `, lastDisconnect.error, ', reconnecting ', shouldReconnect);
             
             if (shouldReconnect) {
