@@ -50,7 +50,7 @@ async function initWhatsAppClient(sessionId) {
         version,
         auth: state,
         printQRInTerminal: false,
-        browser: Browsers.macOS('Desktop'),
+        browser: ['Ubuntu', 'Chrome', '110.0.5481.192'],
         logger: pino({ level: 'silent' }), // suppress verbose logs
         connectTimeoutMs: 60000,
         qrTimeout: 40000,
@@ -88,7 +88,11 @@ async function initWhatsAppClient(sessionId) {
 
                 // Reconnect automatically
                 sockets.delete(sessionId);
-                setTimeout(() => initWhatsAppClient(sessionId), 3000);
+                const currentState = sessionStates.get(sessionId) || {};
+                const attempts = currentState.reconnectAttempts || 0;
+                const backoffDelay = Math.min(3000 * Math.pow(2, attempts), 60000); // Max 60 seconds
+                console.log(`[${sessionId}] Reconnecting in ${backoffDelay}ms (Attempt ${attempts})...`);
+                setTimeout(() => initWhatsAppClient(sessionId), backoffDelay);
             } else {
                 // Logged out
                 updatePHPStatus(sessionId, { status: 'disconnected', qr: null, qrRaw: null });
