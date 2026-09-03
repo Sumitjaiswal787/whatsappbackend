@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, delay, Browsers } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, delay, Browsers, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const qrcode = require('qrcode');
 const express = require('express');
@@ -45,7 +45,9 @@ async function initWhatsAppClient(sessionId) {
     const authDir = path.join(__dirname, 'auth_info', `session-${sessionId}`);
     const { state, saveCreds } = await useMultiFileAuthState(authDir);
 
+    const { version } = await fetchLatestBaileysVersion();
     const sock = makeWASocket({
+        version,
         auth: state,
         printQRInTerminal: false,
         browser: Browsers.macOS('Desktop'),
